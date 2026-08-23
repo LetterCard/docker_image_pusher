@@ -1,0 +1,89 @@
+name: Check Umami Version
+
+on:
+  schedule:
+    # 每天 UTC 0 点检查一次（北京时间早上 8 点）
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-umami:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Query latest umami tag from ghcr.io
+        id: latest
+        run: |
+          set -euo pipefail
+          REPO="umami-software/umami"
+
+          # 匿名获取 ghcr.io 拉取令牌（公开仓库无需登录）
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r '.token')
+
+          # 获取全部 tag（处理分页）
+          TAGS=()
+          URL="https://ghcr.io/v2/${REPO}/tags/list?n=100"
+          while [ -n "$URL" ]; do
+            BODY=$(curl -fsSL -D /tmp/ghcr_headers -H "Authorization: Bearer ${TOKEN}" "$URL")
+            while IFS= read -r t; do
+              [ -n "$t" ] && TAGS+=("$t")
+            done < <(printf '%s' "$BODY" | jq -r '.tags[]?')
+            NEXT=$(grep -i '^link:' /tmp/ghcr_headers \
+              | sed -n 's/.*<$[^>]*$>;[[:space:]]*rel="next".*/\1/Ip' \
+              | head -n1)
+            if [ -n "$NEXT" ]; then
+              case "$NEXT" in
+                http*) URL="$NEXT" ;;
+                /*)    URL="https://ghcr.io${NEXT}" ;;
+                *)     URL="https://ghcr.io/v2/${REPO}/tags/list?n=100&last=${NEXT}" ;;
+              esac
+            else
+              URL=""
+            fi
+          done
+
+          # 仅保留纯语义化版本（如 3.1.0），排除 latest / mysql-* 等
+          LATEST=""
+          for t in "${TAGS[@]}"; do
+            if [[ "$t" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              if [ -z "$LATEST" ] || [ "$(printf '%s\n%s\n' "$LATEST" "$t" | sort -V | tail -n1)" = "$t" ]; then
+                LATEST="$t"
+              fi
+            fi
+          done
+
+          if [ -z "$LATEST" ]; then
+            echo "未找到可用的 umami 版本 tag"
+            exit 1
+          fi
+          echo "检测到最新版本: $LATEST"
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Update images.txt when version changed
+        run: |
+          set -euo pipefail
+          LATEST="${{ steps.latest.outputs.version }}"
+          FILE="images.txt"
+          KEY="ghcr.io/umami-software/umami"
+
+          CURRENT=$(grep -E "^${KEY}:" "$FILE" | head -n1 | awk -F: '{print $NF}')
+          echo "images.txt 中当前版本: ${CURRENT:-无}"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "已是最新，无需更新"
+            exit 0
+          fi
+
+          echo "将 $KEY 从 ${CURRENT:-无} 更新为 $LATEST"
+          sed -i -E "s|^(ghcr\.io/umami-software/umami):[0-9]+\.[0-9]+\.[0-9]+.*|\1:${LATEST}|" "$FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+          git commit -m "chore: bump umami to ${LATEST}"
+          git push
