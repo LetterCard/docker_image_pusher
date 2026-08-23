@@ -17,13 +17,16 @@ env:
   ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
 
 jobs:
-  sync:
+  detect:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: 检测上游版本并判断是否更新
+        id: check
         run: |
           python3 - <<'PY'
           import os, json, re, urllib.request
@@ -64,12 +67,18 @@ jobs:
           else:
               lv = ".".join(map(str, latest))
               print("发现新版: %s -> %s" % (cur, lv))
-              with open(os.environ["GITHUB_ENV"], "a") as f:
-                  f.write("UMAMI_VERSION=%s\n" % lv)
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("version=%s\n" % lv)
           PY
 
+  sync:
+    needs: detect
+    if: needs.detect.outputs.version != ''
+    runs-on: ubuntu-latest
+    env:
+      UMAMI_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
       - name: 推送新版到阿里云
-        if: env.UMAMI_VERSION != ''
         run: |
           docker login -u "$ALIYUN_REGISTRY_USER" -p "$ALIYUN_REGISTRY_PASSWORD" "$ALIYUN_REGISTRY"
           IMG="ghcr.io/umami-software/umami:${UMAMI_VERSION}"
@@ -78,8 +87,17 @@ jobs:
           docker tag "$IMG" "$NEW"
           docker push "$NEW"
 
+  writeback:
+    needs: [sync, detect]
+    if: needs.detect.outputs.version != ''
+    runs-on: ubuntu-latest
+    env:
+      UMAMI_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: 写 VERSION 并提交留档
-        if: env.UMAMI_VERSION != ''
         run: |
           echo "${UMAMI_VERSION}" > VERSION
           git config user.name "github-actions[bot]"
