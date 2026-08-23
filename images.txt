@@ -1,2 +1,2 @@
-#支持私库
+# 支持私库｜一行一条｜结尾不能有空格
 ghcr.io/umami-software/umami:3.1.0
