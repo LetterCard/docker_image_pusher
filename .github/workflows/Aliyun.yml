@@ -4,12 +4,12 @@
 name: Sync Umami to Aliyun
 
 on:
-  workflow_dispatch:                    # 支持手动触发
+  workflow_dispatch:
   schedule:
-    - cron: '0 1 * * *'                 # 每天 UTC 01:00 = 北京时间 09:00
+    - cron: '0 1 * * *'
 
 permissions:
-  contents: write                       # 允许提交 VERSION
+  contents: write
 
 env:
   ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
@@ -25,39 +25,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 检测上游版本并判断是否更新
-        run: python3 - <<'PY'
-import os,json,re,urllib.request
+        run: |
+          python3 - <<'PY'
+          import os,json,re,urllib.request
 
-IMG="umami-software/umami"
-MOZ={"User-Agent":"umami-sync"}
-def curl(url,h=None):
-    r=urllib.request.Request(url,headers=h or MOZ)
-    return json.load(urllib.request.urlopen(r,timeout=30))
-def semver(t):
-    m=re.fullmatch(r"(\d+)\.(\d+)\.(\d+)",t)
-    return tuple(map(int,m.groups())) if m else None
+          IMG="umami-software/umami"
+          MOZ={"User-Agent":"umami-sync"}
+          def curl(url,h=None):
+              r=urllib.request.Request(url,headers=h or MOZ)
+              return json.load(urllib.request.urlopen(r,timeout=30))
+          def semver(t):
+              m=re.fullmatch(r"(\d+)\.(\d+)\.(\d+)",t)
+              return tuple(map(int,m.groups())) if m else None
 
-tok=curl("https://ghcr.io/token?scope=repository:%s:pull"%IMG)["token"]
-tags=curl("https://ghcr.io/v2/%s/tags/list"%IMG,{"Authorization":"Bearer "+tok,**MOZ})["tags"]
+          tok=curl("https://ghcr.io/token?scope=repository:%s:pull"%IMG)["token"]
+          tags=curl("https://ghcr.io/v2/%s/tags/list"%IMG,
+                    {"Authorization":"Bearer "+tok,**MOZ})["tags"]
 
-cur=open("VERSION").read().strip()
-c=semver(cur)
-if not c:
-    print("VERSION 内容非法，请写成纯版本号如 3.1.0")
-    raise SystemExit(1)
+          # 读取留档版本，只在与当前相同主版本内找最新，避免跨大版本(2->3)跳跃
+          cur=open("VERSION").read().strip()
+          c=semver(cur)
+          if not c:
+              print("VERSION 内容非法，请写成纯版本号如 3.1.0")
+              raise SystemExit(1)
+          cands=sorted(v for v in (semver(t) for t in tags) if v and v[0]==c[0])
+          latest=cands[-1]
 
-# 只关注与当前相同主版本(如 3.x)的最新版，避免意外跨大版本(2->3 等)
-cands=sorted(v for v in (semver(t) for t in tags) if v and v[0]==c[0])
-latest=cands[-1]
-
-if latest<=c:
-    print("已是最新版本:",cur)
-else:
-    lv=".".join(map(str,latest))
-    print("发现新版: %s -> %s"%(cur,lv))
-    with open(os.environ["GITHUB_ENV"],"a") as f:
-        f.write("UMAMI_VERSION=%s\n"%lv)
-PY
+          if latest<=c:
+              print("已是最新版本:",cur)
+          else:
+              lv=".".join(map(str,latest))
+              print("发现新版: %s -> %s"%(cur,lv))
+              with open(os.environ["GITHUB_ENV"],"a") as f:
+                  f.write("UMAMI_VERSION=%s\n"%lv)
+          PY
 
       - name: 推送新版到阿里云
         if: env.UMAMI_VERSION != ''
@@ -65,11 +66,8 @@ PY
           docker login -u "$ALIYUN_REGISTRY_USER" -p "$ALIYUN_REGISTRY_PASSWORD" "$ALIYUN_REGISTRY"
           IMG="ghcr.io/umami-software/umami:${UMAMI_VERSION}"
           NEW="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/umami:${UMAMI_VERSION}"
-          echo "docker pull $IMG"
           docker pull "$IMG"
-          echo "docker tag $IMG $NEW"
           docker tag "$IMG" "$NEW"
-          echo "docker push $NEW"
           docker push "$NEW"
 
       - name: 写 VERSION 并提交留档
