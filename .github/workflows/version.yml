@@ -2,7 +2,7 @@ name: Check Umami Version
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # 每天 UTC 0 点（北京时间 08:00）
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -15,46 +15,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get latest umami version from GitHub tags API
+      - name: Detect latest umami version
         id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # 公开接口，无需鉴权（已实测可用）
-          BODY=$(curl -fsSL "https://api.github.com/repos/umami-software/umami/tags?per_page=100")
-          # 取所有 vX.Y.Z / X.Y.Z 形式的 tag，去掉可能的 v 前缀，按版本号取最大
-          LATEST=$(printf '%s' "$BODY" \
+          echo "::group::Query GitHub tags API"
+          # 用仓库自带的 GITHUB_TOKEN 当 Bearer，避免匿名接口 60次/小时 限流（共享 runner 很容易 403）
+          RESP=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/umami-software/umami/tags?per_page=100") || {
+              echo "::error::拉取 tags 接口失败（可能限流或网络问题），原始响应："
+              echo "${RESP:0:500}"
+              exit 1
+          }
+          echo "接口返回前 300 字符：${RESP:0:300}"
+          echo "::endgroup::"
+
+          LATEST=$(printf '%s' "$RESP" \
             | jq -r '.[].name' \
             | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
             | sed 's/^v//' \
             | sort -V \
             | tail -n1)
+
           if [ -z "$LATEST" ]; then
-            echo "未从 GitHub tags 接口获取到可用的 umami 版本"
+            echo "::error::未在 tags 中找到可用的语义化版本"
             exit 1
           fi
           echo "检测到最新版本: $LATEST"
           echo "version=$LATEST" >> "$GITHUB_OUTPUT"
 
-      - name: Update images.txt when version changed
+      - name: Update images.txt
         run: |
           set -euo pipefail
           LATEST="${{ steps.latest.outputs.version }}"
           FILE="images.txt"
-          KEY="ghcr.io/umami-software/umami"
 
-          CURRENT=$(grep -E "^${KEY}:" "$FILE" | head -n1 | awk -F: '{print $NF}')
-          echo "images.txt 当前版本: ${CURRENT:-无} / 最新版本: $LATEST"
+          echo "最新版本 = $LATEST"
+          echo "运行前 images.txt 内容："; cat "$FILE"
+
+          CURRENT=$(grep -E '^ghcr\.io/umami-software/umami:[0-9]' "$FILE" | head -n1 | awk -F: '{print $NF}')
+          echo "解析到的当前版本 = ${CURRENT:-无}"
 
           if [ "$CURRENT" = "$LATEST" ]; then
-            echo "已是最新，无需更新"
+            echo "已是最新（$LATEST），无需更新"
             exit 0
           fi
 
-          echo "将 $KEY 由 ${CURRENT:-无} 更新为 $LATEST"
-          sed -i -E "s|^(ghcr\.io/umami-software/umami):[0-9]+\.[0-9]+\.[0-9]+.*|\1:${LATEST}|" "$FILE"
+          echo "更新 $FILE -> $LATEST"
+          sed -i -E 's|^(ghcr\.io/umami-software/umami):[0-9]+\.[0-9]+\.[0-9]+.*|\1:'"$LATEST"'|' "$FILE"
+          echo "更新后 images.txt 内容："; cat "$FILE"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$FILE"
           git commit -m "chore: bump umami to ${LATEST}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
+          echo "::notice::已提交并推送 images.txt 的更新"
