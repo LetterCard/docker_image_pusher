@@ -23,7 +23,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: 检测上游版本并判断是否更新
         id: check
@@ -95,7 +95,7 @@ jobs:
       UMAMI_VERSION: ${{ needs.detect.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: 写 VERSION 并提交留档
         run: |
