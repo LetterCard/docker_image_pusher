@@ -1,4 +1,3 @@
 # 支持私库｜一行一条｜结尾不能有空格
 ghcr.io/metacubex/metacubexd-server:latest
-ghcr.io/dengji85/avm:latest-full
 ghcr.io/dengji85/avm:latest
